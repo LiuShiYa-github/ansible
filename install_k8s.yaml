@@ -1,0 +1,78 @@
+---
+- hosts: master
+  remote_user: root
+  tasks:
+    - name: stop firewalld
+      service: name=firewalld state=stopped enabled=no
+    - name: sopy selinux config
+      copy: src=/etc/selinux/config dest=/etc/selinux/config backup=yes
+    - name: stop selinux && stop swap
+      shell: setenforce 0 || echo "selinux stop fail"  && swapoff -a && sed -ri 's/.*swap.*/#&/' /etc/fstab
+    - name: change host name master
+      hostname: name=master
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: change host name work01
+      hostname: name=work01
+      when: ansible_default_ipv4.address == "10.0.0.52"
+    - name: change host name work02
+      hostname: name=work02
+      when: ansible_default_ipv4.address == "10.0.0.53"
+    - name: copy /etc/hosts
+      copy: src=/etc/hosts dest=/etc/hosts backup=yes
+    - name: copy k8s conf
+      copy: src=/etc/sysctl.d/k8s.conf dest=/etc/sysctl.d/k8s.conf backup=yes
+    - name: sysctl --system
+      shell: sysctl --system
+    - name: install ntpdate
+      yum: name=ntpdate state=installed
+    - name: ntpdate time.windows.com
+      shell: ntpdate time.windows.com
+    - name: cpoy /etc/yum.repos.d/kubernetes.repo
+      copy: src=/etc/yum.repos.d/kubernetes.repo dest=/etc/yum.repos.d/kubernetes.repo backup=yes
+    - name: install kubectl
+      yum: name=kubelet-1.20.0,kubeadm-1.20.0,kubectl-1.20.0 state=installed
+    - name: start kubelet
+      service: name=kubelet state=started enabled=yes
+    - name: init kubeadm
+      shell: kubeadm init --apiserver-advertise-address=10.0.0.51 --image-repository registry.aliyuncs.com/google_containers --kubernetes-version v1.20.0 --service-cidr=10.96.0.0/12 --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=all
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: mkdir -p /root/.kube
+      shell: mkdir -p /root/.kube
+    - name: ~/.bashrc
+      shell: sed -ri "s/alias cp='cp -i'/#alias cp='cp -i'/" ~/.bashrc
+    - name: copy /etc/kubernetes/admin.conf /root/.kube/config
+      shell: cp -rf /etc/kubernetes/admin.conf /root/.kube/config
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: chown root:root /root/.kube/config
+      shell: chown root:root /root/.kube/config
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: kubectl get nodes
+      shell: kubectl get nodes
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: copy calico.yaml
+      copy: src=/root/k8s/package/calico.yaml dest=/root/calico.yaml backup=yes
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: kubectl apply -f calico.yaml
+      shell: kubectl apply -f /root/calico.yaml && kubectl get pods --all-namespaces
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: copy kube-controller-manager.yaml
+      copy: src=/root/k8s/package/kube-controller-manager.yaml dest=/etc/kubernetes/manifests/kube-controller-manager.yaml backup=yes
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: copy kube-scheduler.yaml
+      copy: src=/root/k8s/package/kube-scheduler.yaml dest=/etc/kubernetes/manifests/kube-scheduler.yaml backup=yes
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: systemctl restart kubelet
+      service: name=kubelet state=restarted
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: kubectl create deployment
+      shell: kubectl create deployment nginx --image=nginx && kubectl expose deployment nginx --port=80 --type=NodePort && kubectl get pod,svc
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: copy kubernetes-dashboard.yaml
+      copy: src=/root/k8s/package/kubernetes-dashboard.yaml dest=/root/kubernetes-dashboard.yaml backup=yes
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: install kubernetes-dashboard.yaml
+      shell: kubectl apply -f /root/kubernetes-dashboard.yaml && kubectl get pods -n kubernetes-dashboard
+      when: ansible_default_ipv4.address == "10.0.0.51"
+    - name: create user
+      shell: kubectl create serviceaccount dashboard-admin -n kube-system && kubectl create clusterrolebinding dashboard-admin --clusterrole=cluster-admin --serviceaccount=kube-system:dashboard-admin && kubectl describe secrets -n kube-system $(kubectl -n kube-system get secret | awk '/dashboard-admin/{print $1}')
+      when: ansible_default_ipv4.address == "10.0.0.51"
